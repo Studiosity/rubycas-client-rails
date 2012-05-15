@@ -1,5 +1,6 @@
 
 require 'casclient'
+require 'cerebro/user'
 
 module RubyCAS
   class Railtie < Rails::Railtie
@@ -81,18 +82,24 @@ module RubyCAS
           
           if st.is_valid?
             #if is_new_session
-              log.info("Ticket #{st.ticket.inspect} for service #{st.service.inspect} belonging to user #{st.user.inspect} is VALID.")
-              controller.session[client.username_session_key] = st.user.dup
-              controller.session[client.extra_attributes_session_key] = HashWithIndifferentAccess.new(st.extra_attributes) if st.extra_attributes
+              vr = st.response
+              log.info("Ticket #{st.ticket.inspect} for service #{st.service.inspect} belonging to user #{vr.user} is VALID.")
+              controller.session[client.username_session_key] = vr.user
+              controller.session[client.extra_attributes_session_key] = HashWithIndifferentAccess.new(vr.extra_attributes) if vr.extra_attributes
               
-              if st.extra_attributes
-                log.debug("Extra user attributes provided along with ticket #{st.ticket.inspect}: #{st.extra_attributes.inspect}.")
+              if vr.extra_attributes
+                log.debug("Extra user attributes provided along with ticket #{st.ticket.inspect}: #{vr.extra_attributes.inspect}.")
               end
-              
+
+              # CUSTOM TA LOGIC
+              #
+              # CAS will always return a user UUID on successful auth, so persist that into the session
+              controller.session[:user_uuid] = controller.session[client.extra_attributes_session_key][:uuid]
+              controller.session[:current_user] = Cerebro::User.find(controller.session[:user_uuid])
               # RubyCAS-Client 1.x used :casfilteruser as it's username session key,
               # so we need to set this here to ensure compatibility with configurations
               # built around the old client.
-              controller.session[:casfilteruser] = st.user
+              controller.session[:casfilteruser] = vr.user
               
               if config[:enable_single_sign_out]
                 f = store_service_session_lookup(st, controller.request.session_options[:id] || controller.session.session_id)
@@ -103,12 +110,12 @@ module RubyCAS
             # Store the ticket in the session to avoid re-validating the same service
             # ticket with the CAS server.
             controller.session[:cas_last_valid_ticket] = st.ticket
-	    controller.session[:cas_last_valid_ticket_service] = st.service
+            controller.session[:cas_last_valid_ticket_service] = st.service
             
-            if st.pgt_iou
-              unless controller.session[:cas_pgt] && controller.session[:cas_pgt].ticket && controller.session[:cas_pgt].iou == st.pgt_iou
+            if vr.pgt_iou
+              unless controller.session[:cas_pgt] && controller.session[:cas_pgt].ticket && controller.session[:cas_pgt].iou == vr.pgt_iou
                 log.info("Receipt has a proxy-granting ticket IOU. Attempting to retrieve the proxy-granting ticket...")
-                pgt = client.retrieve_proxy_granting_ticket(st.pgt_iou)
+                pgt = client.retrieve_proxy_granting_ticket(vr.pgt_iou)
 
                 if pgt
                   log.debug("Got PGT #{pgt.ticket.inspect} for PGT IOU #{pgt.iou.inspect}. This will be stored in the session.")
@@ -116,18 +123,18 @@ module RubyCAS
                   # For backwards compatibility with RubyCAS-Client 1.x configurations...
                   controller.session[:casfilterpgt] = pgt
                 else
-                  log.error("Failed to retrieve a PGT for PGT IOU #{st.pgt_iou}!")
+                  log.error("Failed to retrieve a PGT for PGT IOU #{vr.pgt_iou}!")
                 end
               else
-                log.info("PGT is present in session and PGT IOU #{st.pgt_iou} matches the saved PGT IOU.  Not retrieving new PGT.")
+                log.info("PGT is present in session and PGT IOU #{vr.pgt_iou} matches the saved PGT IOU.  Not retrieving new PGT.")
               end
 
             end
             
             return true
           else
-            log.warn("Ticket #{st.ticket.inspect} failed validation -- #{st.failure_code}: #{st.failure_message}")
-            unauthorized!(controller, st)
+            log.warn("Ticket #{st.ticket.inspect} failed validation -- #{vr.failure_code}: #{vr.failure_message}")
+            unauthorized!(controller, vr)
             return false
           end
         else # no service ticket was present in the request
