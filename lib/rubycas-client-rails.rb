@@ -1,6 +1,5 @@
 
 require 'casclient'
-require 'cerebro/user'
 
 module RubyCAS
   class Railtie < Rails::Railtie
@@ -95,7 +94,7 @@ module RubyCAS
               #
               # CAS will always return a user UUID on successful auth, so persist that into the session
               controller.session[:user_uuid] = controller.session[client.extra_attributes_session_key][:uuid]
-              controller.session[:current_user] = Cerebro::User.find(controller.session[:user_uuid])
+              #controller.session[:current_user] = ::User.find_by_user_guid(controller.session[:user_uuid])
               # RubyCAS-Client 1.x used :casfilteruser as it's username session key,
               # so we need to set this here to ensure compatibility with configurations
               # built around the old client.

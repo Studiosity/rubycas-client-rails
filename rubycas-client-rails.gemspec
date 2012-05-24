@@ -15,4 +15,5 @@ Gem::Specification.new do |s|
 
   s.add_dependency('rails', '>= 3.0.0')
   s.add_dependency('rubycas-client', '2.2.1')
+  s.add_dependency('blackbird')
 end
