@@ -1,55 +1,71 @@
-
 require 'casclient'
+
+
+module CASClient
+  class Client
+    def request_login_ticket
+      uri = URI.parse(cas_base_url + '/loginTicket')
+      https = https_connection(uri)
+      res = https.post(uri.path, ';')
+
+      raise CASException, res.body unless res.kind_of? Net::HTTPSuccess
+
+      res.body.strip
+    end
+  end
+end
 
 module RubyCAS
   class Railtie < Rails::Railtie
     config.rubycas = ActiveSupport::OrderedOptions.new
-    
+
     initializer 'rubycas.initialize' do |app|
       RubyCAS::Filter.setup(config.rubycas)
     end
   end
-  
+
   class Filter
-    cattr_reader :config, :log, :client
-    
+    cattr_reader :config, :log, :client, :sign_in_url
+
     # These are initialized when you call setup.
     @@client = nil
     @@log = nil
     @@fake_user = nil
     @@fake_extra_attributes = nil
-    
+    @@sign_in_url = nil
+
     class << self
       def setup(config)
         @@config = config
         @@config[:logger] = Rails.logger unless @@config[:logger]
         @@client = CASClient::Client.new(@@config)
         @@log = @@client.log
+        @@sign_in_url = @@config[:sign_in_url]
       end
-      
+
       def filter(controller)
         raise "Cannot use the CASClient filter because it has not yet been configured." if config.nil?
-        
+
         if @@fake_user
           controller.session[client.username_session_key] = @@fake_user
           controller.session[:casfilteruser] = @@fake_user
           controller.session[client.extra_attributes_session_key] = @@fake_extra_attributes
           return true
         end
-        
+
         ### patch this line to recreate the 2 items from cookie 
         last_st = controller.session[:cas_last_valid_ticket]
-	last_st_service = controller.session[:cas_last_valid_ticket_service]
-        
+        last_st_service = controller.session[:cas_last_valid_ticket_service]
+
         if single_sign_out(controller)
           controller.send(:render, :text => "CAS Single-Sign-Out request intercepted.")
           return false 
         end
 
         st = read_ticket(controller)
-        
+
        # is_new_session = true
-        
+
         if st && last_st && 
             last_st == st.ticket && 
             last_st_service == st.service
@@ -81,13 +97,12 @@ module RubyCAS
           
           if st.is_valid?
             #if is_new_session
-              vr = st.response
-              log.info("Ticket #{st.ticket.inspect} for service #{st.service.inspect} belonging to user #{vr.user} is VALID.")
-              controller.session[client.username_session_key] = vr.user
-              controller.session[client.extra_attributes_session_key] = HashWithIndifferentAccess.new(vr.extra_attributes) if vr.extra_attributes
-              
-              if vr.extra_attributes
-                log.debug("Extra user attributes provided along with ticket #{st.ticket.inspect}: #{vr.extra_attributes.inspect}.")
+              log.info("Ticket #{st.ticket.inspect} for service #{st.service.inspect} belonging to user #{st.user} is VALID.")
+              controller.session[client.username_session_key] = st.user.dup
+              controller.session[client.extra_attributes_session_key] = HashWithIndifferentAccess.new(st.extra_attributes) if st.extra_attributes
+
+              if st.extra_attributes
+                log.debug("Extra user attribustes provided along with ticket #{st.ticket.inspect}: #{st.extra_attributes.inspect}.")
               end
 
               # CUSTOM TA LOGIC
@@ -98,7 +113,7 @@ module RubyCAS
               # RubyCAS-Client 1.x used :casfilteruser as it's username session key,
               # so we need to set this here to ensure compatibility with configurations
               # built around the old client.
-              controller.session[:casfilteruser] = vr.user
+              controller.session[:casfilteruser] = st.user
               
               if config[:enable_single_sign_out]
                 f = store_service_session_lookup(st, controller.request.session_options[:id] || controller.session.session_id)
@@ -111,10 +126,10 @@ module RubyCAS
             controller.session[:cas_last_valid_ticket] = st.ticket
             controller.session[:cas_last_valid_ticket_service] = st.service
             
-            if vr.pgt_iou
+            if st.pgt_iou
               unless controller.session[:cas_pgt] && controller.session[:cas_pgt].ticket && controller.session[:cas_pgt].iou == vr.pgt_iou
                 log.info("Receipt has a proxy-granting ticket IOU. Attempting to retrieve the proxy-granting ticket...")
-                pgt = client.retrieve_proxy_granting_ticket(vr.pgt_iou)
+                pgt = client.retrieve_proxy_granting_ticket(st.pgt_iou)
 
                 if pgt
                   log.debug("Got PGT #{pgt.ticket.inspect} for PGT IOU #{pgt.iou.inspect}. This will be stored in the session.")
@@ -122,18 +137,18 @@ module RubyCAS
                   # For backwards compatibility with RubyCAS-Client 1.x configurations...
                   controller.session[:casfilterpgt] = pgt
                 else
-                  log.error("Failed to retrieve a PGT for PGT IOU #{vr.pgt_iou}!")
+                  log.error("Failed to retrieve a PGT for PGT IOU #{st.pgt_iou}!")
                 end
               else
-                log.info("PGT is present in session and PGT IOU #{vr.pgt_iou} matches the saved PGT IOU.  Not retrieving new PGT.")
+                log.info("PGT is present in session and PGT IOU #{st.pgt_iou} matches the saved PGT IOU.  Not retrieving new PGT.")
               end
 
             end
             
             return true
           else
-            log.warn("Ticket #{st.ticket.inspect} failed validation -- #{vr.failure_code}: #{vr.failure_message}")
-            unauthorized!(controller, vr)
+            log.warn("Ticket #{st.ticket.inspect} failed validation -- #{st.failure_code}: #{st.failure_message}")
+            unauthorized!(controller, st)
             return false
           end
         else # no service ticket was present in the request
@@ -217,7 +232,7 @@ module RubyCAS
         else
           log.info("Ticket #{resp.ticket.inspect} for service #{return_path.inspect} is VALID.")
         end
-        
+        log.info resp.inspect
         resp
       end
       
@@ -253,7 +268,7 @@ module RubyCAS
       end
       
       def redirect_to_cas_for_authentication(controller)
-        redirect_url = login_url(controller)
+        redirect_url = @@sign_in_url || login_url(controller)
         
         if use_gatewaying?
           controller.session[:cas_sent_to_gateway] = true
