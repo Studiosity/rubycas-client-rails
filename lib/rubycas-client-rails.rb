@@ -50,6 +50,7 @@ module RubyCAS
           controller.session[client.username_session_key] = @@fake_user
           controller.session[:casfilteruser] = @@fake_user
           controller.session[client.extra_attributes_session_key] = @@fake_extra_attributes
+          controller.session[:user_uuid] = @@fake_extra_attributes[:user_uuid]
           return true
         end
 
