@@ -269,7 +269,7 @@ module RubyCAS
       end
       
       def redirect_to_cas_for_authentication(controller)
-        redirect_url = @@sign_in_url || login_url(controller)
+        redirect_url = login_url(controller)
         
         if use_gatewaying?
           controller.session[:cas_sent_to_gateway] = true
